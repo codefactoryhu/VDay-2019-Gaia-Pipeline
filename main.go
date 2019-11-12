@@ -11,6 +11,7 @@ import (
 	vaultapi "github.com/hashicorp/vault/api"
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
+	kerr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -26,12 +27,14 @@ var hostDNSName = "host.docker.internal"
 
 // Variables dynamically set during runtime.
 var (
-	vaultAddress string
-	vaultToken   string
-	imageName    string
-	replicas     int32
-	appName      string
-	clientSet    *kubernetes.Clientset
+	vaultAddress  string
+	vaultToken    string
+	imageName     string
+	replicas      int32
+	appName       string
+	namespace     string
+	configmapName string
+	clientSet     *kubernetes.Clientset
 )
 
 // GetSecretsFromVault retrieves all information and credentials
@@ -131,6 +134,10 @@ func PrepareDeployment(args sdk.Arguments) error {
 			replicas = int32(rep)
 		case "app-name":
 			appName = arg.Value
+		case "namespace":
+			namespace = arg.Value
+		case "configmap":
+			configmapName = arg.Value
 		}
 	}
 
@@ -143,22 +150,22 @@ func CreateNamespace(args sdk.Arguments) error {
 	// Create namespace object
 	ns := &apiv1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: appName,
+			Name: namespace,
 			Labels: map[string]string{
 				"name":       "nginx",
 				"env":        "production",
-				"conference": "vday-2019-zumi",
+				"conference": "vday-2019",
 			},
 		},
 	}
 
 	// Lookup if namespace already exists
 	nsClient := clientSet.CoreV1().Namespaces()
-	_, err := nsClient.Get(appName, metav1.GetOptions{})
+	_, err := nsClient.Get(namespace, metav1.GetOptions{})
 
 	// namespace exists
 	if err == nil {
-		log.Printf("Namespace '%s' already exists. Update!", appName)
+		log.Printf("Namespace '%s' already exists. Update!", namespace)
 		_, err = clientSet.CoreV1().Namespaces().Update(ns)
 		if err != nil {
 			return err
@@ -172,7 +179,7 @@ func CreateNamespace(args sdk.Arguments) error {
 		return err
 	}
 
-	log.Printf("Service '%s' has been created!\n", appName)
+	log.Printf("Service '%s' has been created!\n", namespace)
 	return err
 }
 
@@ -214,7 +221,7 @@ func CreateDeployment(args sdk.Arguments) error {
 	}
 
 	// Lookup existing deployments
-	deployClient := clientSet.AppsV1().Deployments(appName)
+	deployClient := clientSet.AppsV1().Deployments(namespace)
 	_, err := deployClient.Get(appName, metav1.GetOptions{})
 
 	// Deployment already exists
@@ -262,7 +269,7 @@ func CreateService(args sdk.Arguments) error {
 	}
 
 	// Lookup for existing service
-	serviceClient := clientSet.CoreV1().Services(appName)
+	serviceClient := clientSet.CoreV1().Services(namespace)
 	currService, err := serviceClient.Get(appName, metav1.GetOptions{})
 
 	// Service already exists
@@ -285,6 +292,30 @@ func CreateService(args sdk.Arguments) error {
 		return err
 	}
 	log.Printf("Service '%s' has been created!\n", appName)
+	return nil
+}
+
+func CreateConfigMap(args sdk.Arguments) error {
+	_, err := clientSet.CoreV1().ConfigMaps(namespace).Get(configmapName, metav1.GetOptions{})
+	if kerr.IsNotFound(err) {
+		configMap := &apiv1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      configmapName,
+				Namespace: namespace,
+			},
+			Data:       map[string]string{"hello": "world"},
+			BinaryData: nil,
+		}
+
+		_, err := clientSet.CoreV1().ConfigMaps(namespace).Create(configMap)
+		if err != nil {
+			log.Printf("Error: %s\n", err.Error())
+			return err
+		}
+	} else if err != nil {
+
+	}
 	return nil
 }
 
@@ -315,7 +346,7 @@ func main() {
 					Type:        sdk.TextFieldInp,
 					Description: "Application name:",
 					Key:         "app-name",
-					Value:       "myapp",
+					Value:       "vday-app",
 				},
 				sdk.Argument{
 					Type:        sdk.TextFieldInp,
@@ -329,6 +360,18 @@ func main() {
 					Key:         "replicas",
 					Value:       "3",
 				},
+				sdk.Argument{
+					Type:        sdk.TextFieldInp,
+					Description: "Namespace name:",
+					Key:         "namespace",
+					Value:       "vday-2019",
+				},
+				sdk.Argument{
+					Type:        sdk.TextFieldInp,
+					Description: "Configmap name:",
+					Key:         "configmapName",
+					Value:       "vday-2019",
+				},
 			},
 		},
 		sdk.Job{
@@ -338,10 +381,16 @@ func main() {
 			DependsOn:   []string{"Prepare Deployment"},
 		},
 		sdk.Job{
+			Handler:     CreateConfigMap,
+			Title:       "Create configmap",
+			Description: "Create kubernetes configmap",
+			DependsOn:   []string{"Create namespace"},
+		},
+		sdk.Job{
 			Handler:     CreateDeployment,
 			Title:       "Create deployment",
 			Description: "Create kubernetes app deployment",
-			DependsOn:   []string{"Create namespace"},
+			DependsOn:   []string{"Create namespace", "Create configmap"},
 		},
 		sdk.Job{
 			Handler:     CreateService,
