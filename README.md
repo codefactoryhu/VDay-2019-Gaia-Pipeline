@@ -22,3 +22,18 @@ docker run --cap-add=IPC_LOCK -d \
 ```
 docker run -d -p 8080:8080 --net=gaia-vault --name=gaia gaiapipeline/gaia:latest
 ```
+
+#### Store Kube-Config into Vault
+```
+docker cp ~/.kube/config vault:/tmp/config
+docker exec -it vault sh
+vault kv put secret/kube-conf conf="$(cat /tmp/config | base64)"
+```
+#### SET variables on vault
+```
+Key: vault-token
+Value: root-token
+
+Key: vault-address
+Value: http://vault:8200
+```
